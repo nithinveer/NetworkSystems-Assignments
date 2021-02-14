@@ -1,6 +1,6 @@
 /*
- * udpserver.c - A simple UDP echo server
- * usage: udpserver <port>
+ * uftp_server.c - A simple UDP echo server
+ * usage: server <port>
  */
 
 #include <stdio.h>
@@ -12,8 +12,8 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-
 #define BUFSIZE 1024
+#define MAX_ATTEMTS 100
 
 /*
  * error - wrapper for perror
@@ -23,6 +23,9 @@ void error(char *msg) {
     exit(1);
 }
 
+/*
+ * packet - wrapper for Packet Info
+ */
 
 typedef struct {
     long int ID;
@@ -32,26 +35,16 @@ typedef struct {
         packet_info;
 
 int main(int argc, char **argv) {
-    int sockfd; /* socket */
-    int portno; /* port to listen on */
-    int clientlen; /* byte size of client's address */
-    struct sockaddr_in serveraddr, remaddr; /* server's addr */
-    struct sockaddr_in clientaddr; /* client addr */
+    int sockfd, portno, clientlen , optval, n, recvlen;
+    struct sockaddr_in serveraddr, remaddr;
+    struct sockaddr_in clientaddr;
     socklen_t addrlen = sizeof(remaddr);
-    struct hostent *hostp; /* client host info */
-    char buf[BUFSIZE]; /* message buf */
-    char *hostaddrp; /* dotted decimal host addr string */
-    int optval; /* flag value for setsockopt */
-    int n, recvlen; /* message byte size */
-    char filename[20], command[10];
+    struct hostent *hostp;
+    char buf[BUFSIZE], *hostaddrp, filename[20], command[10], key = 10;
     FILE *fptr;
-    struct timeval timeout = {
-            0,
-            500000
-    };
+    struct timeval timeout = {0,500000};
     long int ACK = 0;
     packet_info packet;
-    char key = 10;
 
     /*
      * check command line arguments
@@ -97,60 +90,74 @@ int main(int argc, char **argv) {
      * main loop: wait for a datagram, then echo it
      */
     clientlen = sizeof(clientaddr);
+    /* We continue to keep the connection alive until an exit command is received
+     * Or when we hard terminate the execution
+     */.
     while (1) {
-        printf("\n");
         printf("Waiting on port %d\n", portno);
 
+        /* Receive the commands from the client*/
         recvlen = recvfrom(sockfd, buf, BUFSIZE, 0, (struct sockaddr *) &remaddr, &addrlen);
-        //printf("received %d bytes\n", recvlen);
         if (recvlen > 0) {
             buf[recvlen] = 0;
             printf("received message: \"%s\"\n", buf);
         }
-
         memset(command, 0, 10);
         memset(filename, 0, 20);
         sscanf(buf, "%s %s", command, filename);
 
+
+        /* Implementation of PUT command */
         if (((strcmp(command, "put") == 0))) {
 
             if (*filename != '\0') {
                 long int num_packets = 0;
-                // Recieve the number of packets of the file
-                recvfrom(sockfd, &num_packets, sizeof(num_packets), 0, (struct sockaddr *) &remaddr, &addrlen);
-                //Server  ACK
-                sendto(sockfd, &num_packets, sizeof(num_packets), 0, (struct sockaddr *) &remaddr, addrlen);
 
+                /* Receive the number of packets of the file from the client */
+                recvfrom(sockfd, &num_packets, sizeof(num_packets), 0, (struct sockaddr *) &remaddr, &addrlen);
+
+                /* Send an acknowledgement back to the client */
+                sendto(sockfd, &num_packets, sizeof(num_packets), 0, (struct sockaddr *) &remaddr, addrlen);
                 printf("Packets - %ld \n", num_packets);
-                if (num_packets == 0) // if 0 packets are recieved that means file can not be created
+
+                /* Null check */
+                if (num_packets == 0)
                 {
                     printf("Empty File - Not Created \n");
-                } else if (num_packets > 0) {
+                }
+                else if (num_packets > 0) {
                     int total_bytes = 0;
                     long int i, j;
-                    // Open the new file to write
+
+                    /* Open a file to write */
                     fptr = fopen(filename, "w");
-                    // Write the number of packets to file
+
+                    /* Iterate to write the packets into a file */
                     for (i = 0; i < num_packets; i++) {
-                        // clear the recieving buffer before writing
+
+                        /* empty the buffer */
                         memset(&packet, 0, sizeof(packet));
-                        // recieve the packet
+
+                        /* receive the packet from the client*/
                         recvlen = recvfrom(sockfd, &packet, sizeof(packet), 0, (struct sockaddr *) &remaddr, &addrlen);
 
-                        // send acknowledgement
+                        /* acknowledge the packet to the client */
                         sendto(sockfd, &(packet.ID), sizeof(packet.ID), 0, (struct sockaddr *) &remaddr, addrlen);
 
-                        if (packet.ID <
-                            i) // If repeated paxket is recived then discard it and reduce the for loop count of recieved packet
+                        /* If same packet is received, discard the same
+                        * This will not put the program in an infinite loop
+                        */
+                        if (packet.ID < i)
                         {
                             i--;
                             printf("Same Packet %ld Discarded \n", packet.ID);
-                        } else {
-                            // Decrypt the data
+                        }
+                        else {
+
                             for ( j = 0; j < packet.length; j++) {
                                 packet.p[j] ^= key;
                             }
-                            // Write the data to the file
+                            /* Write the contents of the packet into the file */
                             fwrite(packet.p, 1, packet.length, fptr);
                             printf("Packet number = %ld Recieved Size- %ld  \n", packet.ID, packet.length);
                             total_bytes += packet.length;
@@ -161,33 +168,38 @@ int main(int argc, char **argv) {
                     fclose(fptr);
                 }
 
-            } else {
+            }
+            else {
                 printf("Filename Not given \n");
 
             }
 
         }
 
-            // server
+
+        /* Implementation of GET command */
         else if ((strcmp(command, "get") == 0)) {
 
-            if (*filename != '\0') // Check if the filename is empty or not
+            /* Null check */
+            if (*filename != '\0')
             {
                 long int num_packets = 0, dropped = 0;
-                fptr = fopen(filename, "rb"); // open the file to read
 
-                setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (char *) &timeout,
-                           sizeof(struct timeval)); // Set the timeout for Acknowlegment
+                /* Open the file for reading */
+                fptr = fopen(filename, "rb");
 
-                if ((fptr == NULL)) // Check if the filename was right or wrong
+                /* Set the timeout for acknowledgement*/
+                setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (char *) &timeout, sizeof(struct timeval));
+
+                if ((fptr == NULL))
                 {
                     printf("Wrong File name \n");
-                    // Send filesize as zero so that server will know that filename was wrong
+                    /* Send Zero packets as there is no file with the given name*/
                     sendto(sockfd, &num_packets, sizeof(num_packets), 0, (struct sockaddr *) &remaddr, sizeof(remaddr));
-                    recvfrom(sockfd, &ACK, sizeof(ACK), 0, (struct sockaddr *) &remaddr,
-                             &addrlen); // Recieve ACK for number of packet
+                    recvfrom(sockfd, &ACK, sizeof(ACK), 0, (struct sockaddr *) &remaddr, &addrlen);
 
-                } else {
+                }
+                else {
                     int counter = 0, timeout_flag = 0;
                     fseek(fptr, 0, SEEK_END);
                     size_t file_size = ftell(fptr);
@@ -195,19 +207,25 @@ int main(int argc, char **argv) {
                     memset(&packet, 0, sizeof(packet));
 
                     printf("File Size - %ld \n", file_size);
-                    num_packets = (file_size / BUFSIZE) + 1; // Number of packets to send
 
-                    // Send the number of packets to the reciever
-                    sendto(sockfd, &(num_packets), sizeof(num_packets), 0, (struct sockaddr *) &remaddr,
-                           sizeof(remaddr));
-                    // wait for ack and if timeout then resend
+                    /* Compute the number of packets to be sent to client */
+                    num_packets = (file_size / BUFSIZE) + 1;
+
+                    /* Send the packets count to the client */
+                    sendto(sockfd, &(num_packets), sizeof(num_packets), 0, (struct sockaddr *) &remaddr, sizeof(remaddr));
+
+                    /* Incase of a timeout resend the packet */
                     while (recvfrom(sockfd, &ACK, sizeof(ACK), 0, (struct sockaddr *) &remaddr, &addrlen) < 0) {
 
-                        sendto(sockfd, &(num_packets), sizeof(num_packets), 0, (struct sockaddr *) &remaddr,
-                               sizeof(remaddr));
+                        sendto(sockfd, &(num_packets), sizeof(num_packets), 0, (struct sockaddr *) &remaddr, sizeof(remaddr));
                         counter++;
-                        // Even after 100 tries if the reciever fails then give connection timeout
-                        if (counter == 100) {
+
+                        /* Send the packets to the receiver
+                        * Retry sending the packet until acknowledgement is received
+                        * Retry for at a max of MAX_ATTEMTS
+                        * Appropriate print statements are provided for easy understanding
+                        */
+                        if (counter == MAX_ATTEMTS) {
                             timeout_flag = 1;
                             printf("File Not Sent - Connection Timeout\n");
                             break;
@@ -215,33 +233,40 @@ int main(int argc, char **argv) {
                     }
 
                     printf("packets - %ld \n", num_packets);
-                    // Send the data
+                    /* Transmit the data */
                     long int i, j;
                     for (i = 0; i < num_packets; i++) {
                         memset(&packet, 0, sizeof(packet));
                         packet.length = fread(packet.p, 1, BUFSIZE, fptr), counter = 0;
                         ACK = 0;
                         packet.ID = i;
-                        // Encrypt the data by Xoring
+
                         for (j = 0; j < packet.length; j++) {
                             packet.p[j] ^= key;
                         }
-                        // Send the encrypted data
+                        /* Send the data/packets */
                         sendto(sockfd, &packet, sizeof(packet), 0, (struct sockaddr *) &remaddr, sizeof(remaddr));
 
                         if (timeout_flag) {
                             printf("File Not Sent - Connection Timeout\n");
                             break;
                         }
-                        // recieve ACK from the reciever
+
+                        /* Receive acknowledgement from the client */
                         recvfrom(sockfd, &ACK, sizeof(ACK), 0, (struct sockaddr *) &remaddr, &addrlen);
+
+                        /* Send the packets to the receiver
+                         * Retry sending the packet until acknowledgement is received
+                         * Retry for at a max of MAX_ATTEMTS
+                         * Appropriate print statements are provided for easy understanding
+                         */
+
                         while ((ACK != packet.ID)) {
-                            // Keep re sending packets until ack for current packet is recieved
                             sendto(sockfd, &packet, sizeof(packet), 0, (struct sockaddr *) &remaddr, sizeof(remaddr));
                             recvfrom(sockfd, &ACK, sizeof(ACK), 0, (struct sockaddr *) &remaddr, &addrlen);
                             printf("\t\tPacket no %ld	 dropped, Total - %ld \n", packet.ID, ++dropped);
                             counter++;
-                            if (counter == 100) {
+                            if (counter == MAX_ATTEMTS) {
                                 timeout_flag = 1;
                                 break;
                             }
@@ -255,33 +280,36 @@ int main(int argc, char **argv) {
                     }
 
                 }
-                // Remove the timeout for the recvfrom
-                struct timeval timeout = {
-                        0,
-                        0
-                };
+                /* Set the timeout to zero */
+                struct timeval timeout = {0,0};
                 setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (char *) &timeout, sizeof(struct timeval));
-            } else {
+            }
+            else {
                 printf("Filename Not given \n");
-                //sendto(udp_socket, "Filename Not Given", 18, 0, (struct sockaddr *)&remaddr, addrlen);
 
             }
 
         }
 
-            // server - delete command
+        /* Implementation of DELETE command */
         else if ((strcmp(command, "delete") == 0)) {
             if (*filename == '\0') {
                 printf("Filename Not given \n");
-                //sendto(sockfd, "Filename Not Given", 18, 0, (struct sockaddr *)&remaddr, addrlen);
-            } else {
+
+            }
+            else {
                 char cmd[10] = "rm ";
                 strcat(cmd, filename);
-                int ret = system(cmd);
-                if (ret) {
+                int sys_response = system(cmd);
+                /*
+                 * Perform the delete operation.
+                 * Send appropriate message to the client
+                 */
+                if (sys_response) {
                     printf("Error in Deleting\n");
                     sendto(sockfd, "Error in Deleting", 17, 0, (struct sockaddr *) &remaddr, addrlen);
-                } else {
+                }
+                else {
                     printf("Successfully deleted %s\n", filename);
                     sendto(sockfd, "Successful", 18, 0, (struct sockaddr *) &remaddr, addrlen);
                 }
@@ -290,43 +318,45 @@ int main(int argc, char **argv) {
 
         }
 
-            // get the list of files on the server side and print it
+        /* Implementation of LS command */
         else if (strcmp(command, "ls") == 0) {
             FILE *list;
-            char filelist[200] = {
-                    0
-            };
-            system("ls >> a.log");
-            list = fopen("a.log", "r");
-            int rec = fread(filelist, 1, 200, list);
-            sendto(sockfd, filelist, rec, 0, (struct sockaddr *) &remaddr, addrlen);
-
-            system("rm a.log");
+            char filelist[200] = {0};
+            system("ls >> _tmp.log");
+            list = fopen("_tmp.log", "r");
+            /*
+            * Perform the ls operation.
+            * dump the response into a dummy file
+            */
+            int file_response = fread(filelist, 1, 200, list);
+            sendto(sockfd, filelist, file_response, 0, (struct sockaddr *) &remaddr, addrlen);
+            system("rm _tmp.log");
         }
 
-            // Get the md5sum for the file on the server side
+        /* Implementation of MD5SUM command(Optional) */
         else if (strcmp(command, "md") == 0) {
             if (*filename == '\0') {
                 printf("Filename Not given \n");
 
-            } else {
+            }
+            else {
                 char cmd[50] = "md5sum ";
                 strcat(cmd, filename);
                 printf("\n md5sum of %s on Server Side \n\n", filename);
                 system(cmd);
             }
-        } else if ((strcmp(command, "exit") == 0)) {
-            //sendto(sockfd, buf, strlen(buf), 0, (struct sockaddr *)&remaddr, addrlen);
+        }
+
+        /* Implementation of EXIT command(Optional) */
+        else if ((strcmp(command, "exit") == 0)) {
             printf("Closing the socket\n");
             close(sockfd);
             return 0;
         }
 
-            // Error in the command or filename
+        /* Any other exceptions or errors */
         else if (recvlen > 0) {
-
             printf("Command Not Found \n");
-            //sendto(sockfd, buf, strlen(buf), 0, (struct sockaddr *)&remaddr, addrlen);
         }
 
     }

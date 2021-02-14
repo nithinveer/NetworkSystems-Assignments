@@ -89,7 +89,7 @@ int main(int argc, char **argv) {
         sscanf(inp, "%s %s", command, filename);
 
 
-        /* Implementation of PUT commands */
+        /* Implementation of PUT command */
         if (((strcmp(command, "put") == 0)) && (*filename != '\0')) // Check if the filename is empty or not for a PUT command
         {
             long int num_packets = 0, dropped = 0;
@@ -263,11 +263,11 @@ int main(int argc, char **argv) {
 
         /* Implementation of DELETE command */
         else if ((strcmp(command, "delete") == 0) && (*filename != '\0')) {
-            char ret[50];
-            memset(ret, 0, 50);
+            char sys_response[50];
+            memset(sys_response, 0, 50);
             /* Receive the delete response from the server */
-            recvfrom(sockfd, ret, 50, 0, (struct sockaddr *) &serveraddr, &addrlen);
-            printf(" %s \n", ret);
+            recvfrom(sockfd, sys_response, 50, 0, (struct sockaddr *) &serveraddr, &addrlen);
+            printf(" %s \n", sys_response);
         }
 
         /* Implementation of MD5SUM  command (Optional)*/

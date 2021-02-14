@@ -92,7 +92,7 @@ int main(int argc, char **argv) {
     clientlen = sizeof(clientaddr);
     /* We continue to keep the connection alive until an exit command is received
      * Or when we hard terminate the execution
-     */.
+     */
     while (1) {
         printf("Waiting on port %d\n", portno);
 
